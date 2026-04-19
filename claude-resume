@@ -1,0 +1,30 @@
+claude --resume 05e3c6c6-387f-48b4-9f7b-d1274fdd63b9
+
+
+I have tried installing:
+
+/home/luke/Documents/Repos/LG_Buddy/
+AND
+/home/luke/Documents/Repos/lgpowercontrol/
+
+Neither work on my Bazzite Linux install, I believe because it uses SELinux and is based on a custom Fedora Atomic image. The startup and shutdown services that should turn the LG TV on and off (using it as a monitor) just do not work.
+
+However running these commands individually do work once i'm already logged in:
+
+bscpylgtvcommand 192.168.1.30 turn_screen_off
+
+bscpylgtvcommand 192.168.1.30  turn_screen_on
+
+I have this repo installed:
+https://github.com/chros73/bscpylgtv
+
+Super easy!
+
+So surely we can look at what the two example repo's are doing and plan out our own implementation that works on Bazzite?
+
+Goal:
+
+1. Plan how to create startup and shutdown scripts that work on SELinux distros like Bazzite
+2. Plan the necessary scripts and code to make this installable on any Bazzite (or SELinux based distro)
+
+Include taking whatever we need out of the two example ones LG_Buddy and lgpowercontrol

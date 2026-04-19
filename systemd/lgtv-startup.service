@@ -1,0 +1,14 @@
+[Unit]
+Description=Turn on LG TV screen at startup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/etc/lgtvcontrol/lgtv-on.sh
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

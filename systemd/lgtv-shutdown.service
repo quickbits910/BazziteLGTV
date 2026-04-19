@@ -1,0 +1,15 @@
+[Unit]
+Description=Turn off LG TV screen at shutdown
+DefaultDependencies=no
+Before=poweroff.target halt.target
+Conflicts=reboot.target
+
+[Service]
+Type=oneshot
+ExecStart=/etc/lgtvcontrol/lgtv-off.sh
+TimeoutStartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=poweroff.target halt.target
