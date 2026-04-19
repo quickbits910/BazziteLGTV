@@ -180,6 +180,7 @@ printf "    Test:        ./install.sh --test\n"
 printf "    Logs:        journalctl -u lgtv-startup -u lgtv-shutdown -f\n"
 echo
 
+# shellcheck disable=SC2059
 read -rp "$(printf "${BOLD}Run screen test now? (off 10s → on) [Y/n]: ${NC}")" answer
 answer="${answer:-Y}"
 if [[ "$answer" =~ ^[Yy]([Ee][Ss])?$ ]]; then
