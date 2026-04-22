@@ -1,8 +1,10 @@
 # BazziteLGTV
 
-Automatically turn your LG TV's screen on at boot and off at shutdown, when using it as a PC monitor on **Bazzite** (or any SELinux-enforcing Fedora Atomic distro).
+Automatically power your LG TV on at boot and off at shutdown, when using it as a PC monitor on **Bazzite** (or any SELinux-enforcing Fedora Atomic distro).
 
-Existing solutions like [LG_Buddy](https://github.com/jesseposner/LG_Buddy) and [lgpowercontrol](https://github.com/nicholasgasior/lgpowercontrol) don't work on Bazzite because systemd runs in the `init_t` SELinux domain and cannot execute scripts installed to `~/.local/` (`user_home_t`). This project fixes that properly — no custom SELinux policy modules, no hacks.
+Existing solutions like [LG_Buddy](https://github.com/jesseposner/LG_Buddy) and [lgpowercontrol](https://github.com/nicholasgasior/lgpowercontrol) don't work on Bazzite because systemd runs in the `init_t` SELinux domain and cannot execute scripts installed to `~/.local/` (`user_home_t`). This project fixes that correctly — no custom SELinux policy modules, no hacks.
+
+**Zero external dependencies.** Everything is implemented in Python's standard library (`asyncio`, `ssl`). No pip packages required.
 
 ---
 
@@ -10,27 +12,14 @@ Existing solutions like [LG_Buddy](https://github.com/jesseposner/LG_Buddy) and 
 
 - Bazzite / Fedora Atomic (or any SELinux-enforcing distro)
 - LG WebOS TV on your local network
-- [`bscpylgtv`](https://github.com/chros73/bscpylgtv) — used to communicate with the TV
-- `policycoreutils-python-utils` — for `semanage` (SELinux context management)
+- `python3` (already present on all Fedora-based systems)
+- `policycoreutils-python-utils` — for `semanage` (only needed if SELinux is Enforcing)
 
-Install the SELinux tools if not already present:
+If `semanage` is missing:
 ```bash
 sudo rpm-ostree install policycoreutils-python-utils
-# reboot after if it was missing
+# reboot after
 ```
-
----
-
-## First-time TV pairing
-
-Before installing, you need to pair with the TV so the auth key gets saved to `~/.aiopylgtv.sqlite`. If you've already run `bscpylgtvcommand` and accepted the prompt on the TV, you're done. If not:
-
-```bash
-pip install --user bscpylgtv
-bscpylgtvcommand 192.168.1.30 turn_screen_on
-```
-
-Accept the pairing prompt that appears on the TV screen. You only need to do this once.
 
 ---
 
@@ -44,24 +33,25 @@ cd BazziteLGTV
 
 The installer will:
 
-1. Check dependencies (`python3`, `semanage`, `restorecon`)
-2. Ask for your TV's IP address (default: `192.168.1.30`)
-3. Create a Python venv at `/opt/lgtvcontrol/` and install `bscpylgtv`
-4. Copy your auth database (`~/.aiopylgtv.sqlite`) to `/etc/lgtvcontrol/`
-5. Write the on/off scripts to `/etc/lgtvcontrol/`
-6. Apply `bin_t` SELinux contexts so systemd can execute them
-7. Install and enable the systemd services
-8. Offer to run a screen test
+1. Check for `python3` and (if SELinux is Enforcing) `semanage`
+2. Ask for your TV's IP address
+3. Copy scripts to `/etc/lgtvcontrol/`
+4. Apply `bin_t` SELinux contexts so systemd can execute them
+5. Pair with the TV — a prompt appears on screen, press OK with your remote
+6. Install and enable the systemd services
+7. Offer to run a screen test (off 10s → on)
 
 ---
 
 ## Test
 
-Run at any time after install to verify everything works — turns the screen off for 10 seconds then back on:
+Run at any time after install:
 
 ```bash
 ./install.sh --test
 ```
+
+Turns the screen off for 10 seconds then back on.
 
 ---
 
@@ -69,19 +59,33 @@ Run at any time after install to verify everything works — turns the screen of
 
 ### The SELinux problem
 
-systemd launches services in the `init_t` SELinux domain. Files in your home directory have `user_home_t` context. SELinux blocks `init_t` from executing `user_home_t` files, which is why running scripts from `~/.local/` silently fails.
+systemd launches services in the `init_t` SELinux domain. Files in your home directory have `user_home_t` context. SELinux blocks `init_t` from executing `user_home_t` files — this is why running scripts from `~/.local/` silently fails.
 
 ### The fix
 
-Scripts and the `bscpylgtv` venv are placed in system paths (`/etc/` and `/opt/`) and labelled `bin_t` using `semanage fcontext`. This is the standard Fedora way to make custom paths executable by systemd — it survives reboots and SELinux filesystem relabels.
+Scripts are installed to `/etc/lgtvcontrol/` and labelled `bin_t` via `semanage fcontext`. This is the standard Fedora approach to making custom paths executable by systemd. It survives reboots and SELinux filesystem relabels.
 
 ```
-/opt/lgtvcontrol/        ← bscpylgtv venv (bin_t via semanage)
-/etc/lgtvcontrol/        ← scripts + auth db (bin_t via semanage)
-/etc/systemd/system/     ← lgtv-startup.service + lgtv-shutdown.service
+/etc/lgtvcontrol/
+  lgtv.py          ← WebSocket client (stdlib only)
+  lgtv-on.sh       ← calls: python3 /etc/lgtvcontrol/lgtv.py on
+  lgtv-off.sh      ← calls: python3 /etc/lgtvcontrol/lgtv.py off
+  tv_ip            ← TV IP address (written by installer)
+  client.key       ← auth key (written during pairing)
+
+/etc/systemd/system/
+  lgtv-startup.service
+  lgtv-shutdown.service
 ```
 
-The scripts use `--key_file_path /etc/lgtvcontrol/.aiopylgtv.sqlite` so the TV auth lookup never depends on `$HOME` being set correctly in the service environment.
+### TV communication
+
+`lgtv.py` connects over WebSocket (port 3001, TLS) and sends LG's SSAP protocol commands:
+
+- **on** → `ssap://system/turnOn`
+- **off** → `ssap://system/turnOff` with `standbyMode: active`
+
+Pairing is done once. The client key is saved to `/etc/lgtvcontrol/client.key` and sent with every subsequent connection.
 
 ### Shutdown vs reboot
 
@@ -100,8 +104,11 @@ systemctl status lgtv-shutdown.service
 journalctl -u lgtv-startup -u lgtv-shutdown -f
 
 # Manually trigger
-sudo systemctl start lgtv-startup.service   # screen on
-sudo /etc/lgtvcontrol/lgtv-off.sh           # screen off
+sudo systemctl start lgtv-startup.service
+sudo systemctl start lgtv-shutdown.service
+
+# Re-pair if the TV rejects the stored key
+sudo python3 /etc/lgtvcontrol/lgtv.py pair
 ```
 
 ---
@@ -112,4 +119,13 @@ sudo /etc/lgtvcontrol/lgtv-off.sh           # screen off
 ./uninstall.sh
 ```
 
-Removes the services, `/opt/lgtvcontrol/`, `/etc/lgtvcontrol/`, and the SELinux fcontext rules.
+Removes the services, `/etc/lgtvcontrol/`, and the SELinux fcontext rules.
+
+---
+
+## Development
+
+```bash
+pip install -r requirements-test.txt
+pytest tests/
+```

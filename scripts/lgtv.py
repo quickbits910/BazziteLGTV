@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LG TV screen control — usage: lgtv.py pair|on|off [webos_version]
+"""LG TV power control — usage: lgtv.py pair|on|off
 Zero external dependencies: uses only Python standard library (asyncio + ssl).
 """
 
@@ -18,10 +18,8 @@ IP_FILE  = CONF_DIR / "tv_ip"
 TIMEOUT  = 10
 
 ENDPOINTS = {
-    "on":  "com.webos.service.tvpower/power/turnOnScreen",
-    "off": "com.webos.service.tvpower/power/turnOffScreen",
-    "on4":  "com.webos.service.tv.power/turnOnScreen",
-    "off4": "com.webos.service.tv.power/turnOffScreen",
+    "on":  "system/turnOn",
+    "off": "system/turnOff",
 }
 
 # Standard LG remote app manifest — the signature was issued by LG and must be
@@ -154,7 +152,7 @@ async def ws_connect(host: str, port: int, ctx: ssl.SSLContext) -> WebSocket:
 # LG TV control
 # ---------------------------------------------------------------------------
 
-async def run(mode: str, webos_ver: str) -> None:
+async def run(mode: str) -> None:
     try:
         tv_ip = IP_FILE.read_text().strip()
     except FileNotFoundError:
@@ -221,16 +219,14 @@ async def run(mode: str, webos_ver: str) -> None:
         if mode == "pair":
             return
 
-        ep_key = f"{mode}{webos_ver}"
-        uri = ENDPOINTS.get(ep_key)
-        if not uri:
-            sys.exit(f"Unknown endpoint '{ep_key}' — valid webos_version: (none) or 4")
+        uri = ENDPOINTS[mode]
 
+        payload = {"standbyMode": "active"} if mode == "off" else {}
         await ws.send(json.dumps({
             "id": 1,
             "type": "request",
             "uri": f"ssap://{uri}",
-            "payload": {"standbyMode": "active"},
+            "payload": payload,
         }))
 
         raw = await asyncio.wait_for(ws.recv(), timeout=TIMEOUT)
@@ -251,8 +247,8 @@ async def run(mode: str, webos_ver: str) -> None:
 def main() -> None:
     args = sys.argv[1:]
     if not args or args[0] not in ("pair", "on", "off"):
-        sys.exit(f"Usage: {sys.argv[0]} pair|on|off [webos_version]")
-    asyncio.run(run(args[0], args[1] if len(args) > 1 else ""))
+        sys.exit(f"Usage: {sys.argv[0]} pair|on|off")
+    asyncio.run(run(args[0]))
 
 
 if __name__ == "__main__":
