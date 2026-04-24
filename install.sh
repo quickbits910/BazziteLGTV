@@ -156,6 +156,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Detect TV MAC address for Wake-on-LAN
+# ---------------------------------------------------------------------------
+info "Detecting TV MAC address (Wake-on-LAN)"
+
+# Ping once to ensure the ARP cache is fresh, then read /proc/net/arp
+ping -c 1 -W 2 "$TV_IP" > /dev/null 2>&1 || true
+tv_mac=$(awk -v ip="$TV_IP" '$1==ip && $4!="00:00:00:00:00:00" { print $4 }' /proc/net/arp 2>/dev/null || true)
+
+if [[ -n "$tv_mac" ]]; then
+    echo "$tv_mac" | sudo tee "$CONF_DIR/tv_mac" > /dev/null
+    sudo chmod 644 "$CONF_DIR/tv_mac"
+    ok "TV MAC: $tv_mac (saved for Wake-on-LAN)"
+else
+    warn "Could not detect TV MAC — Wake-on-LAN will not be available"
+    warn "If needed: echo 'AA:BB:CC:DD:EE:FF' | sudo tee $CONF_DIR/tv_mac"
+fi
+
+# ---------------------------------------------------------------------------
 # Systemd services
 # ---------------------------------------------------------------------------
 info "Installing systemd services"
