@@ -7,6 +7,7 @@ import asyncio
 import base64
 import json
 import os
+import socket
 import ssl
 import struct
 import sys
@@ -15,10 +16,14 @@ from pathlib import Path
 CONF_DIR = Path("/etc/lgtvcontrol")
 KEY_FILE = CONF_DIR / "client.key"
 IP_FILE  = CONF_DIR / "tv_ip"
-TIMEOUT  = 10
+MAC_FILE = CONF_DIR / "tv_mac"
+TIMEOUT        = 10
+RETRY_ATTEMPTS = 8   # max connection attempts at startup
+RETRY_DELAY    = 5   # seconds between attempts
 
 ENDPOINTS = {
-    "on":  "system/turnOn",
+    "on":  "com.webos.service.tvpower/power/turnOnScreen",
+    # standbyMode=active keeps the network chip alive so WoL can wake the TV
     "off": "system/turnOff",
 }
 
@@ -152,32 +157,22 @@ async def ws_connect(host: str, port: int, ctx: ssl.SSLContext) -> WebSocket:
 # LG TV control
 # ---------------------------------------------------------------------------
 
-async def run(mode: str) -> None:
-    try:
-        tv_ip = IP_FILE.read_text().strip()
-    except FileNotFoundError:
-        sys.exit(f"TV IP not configured — expected {IP_FILE}")
+def _send_wol(mac: str) -> None:
+    """Broadcast a Wake-on-LAN magic packet to the given MAC address."""
+    mac_bytes = bytes.fromhex(mac.replace(":", "").replace("-", ""))
+    packet = b"\xff" * 6 + mac_bytes * 16
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.sendto(packet, ("192.168.1.255", 9))
 
-    client_key = None
-    if mode != "pair":
-        if not KEY_FILE.exists():
-            sys.exit(f"No client key at {KEY_FILE} — run: sudo python3 {__file__} pair")
-        client_key = KEY_FILE.read_text().strip() or None
 
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+async def _session(ws: WebSocket, mode: str, client_key: str | None) -> None:
+    """Run the SSAP registration + command over an already-open WebSocket.
 
-    try:
-        ws = await asyncio.wait_for(
-            ws_connect(tv_ip, 3001, ctx),
-            timeout=TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        sys.exit(f"Timed out connecting to TV at {tv_ip} (not reachable within {TIMEOUT}s)")
-    except (OSError, ConnectionError) as e:
-        sys.exit(f"Could not connect to TV at {tv_ip}: {e}")
-
+    Raises ConnectionError if the TV drops the connection mid-protocol so the
+    caller's retry loop can attempt a reconnect.  All other failures call
+    sys.exit() directly — they are not transient and should not be retried.
+    """
     try:
         await ws.send(json.dumps({
             "type": "register",
@@ -220,7 +215,6 @@ async def run(mode: str) -> None:
             return
 
         uri = ENDPOINTS[mode]
-
         payload = {"standbyMode": "active"} if mode == "off" else {}
         await ws.send(json.dumps({
             "id": 1,
@@ -240,8 +234,60 @@ async def run(mode: str) -> None:
 
     except (asyncio.TimeoutError, TimeoutError) as e:
         sys.exit(f"Timed out waiting for TV response: {e}")
-    finally:
-        await ws.close()
+    # ConnectionError (TV sent close frame) propagates — caller will retry
+
+
+async def run(mode: str) -> None:
+    try:
+        tv_ip = IP_FILE.read_text().strip()
+    except FileNotFoundError:
+        sys.exit(f"TV IP not configured — expected {IP_FILE}")
+
+    client_key = None
+    if mode != "pair":
+        if not KEY_FILE.exists():
+            sys.exit(f"No client key at {KEY_FILE} — run: sudo python3 {__file__} pair")
+        client_key = KEY_FILE.read_text().strip() or None
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    mac = MAC_FILE.read_text().strip() if MAC_FILE.exists() else None
+
+    last_err = ""
+    wol_sent = False
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            ws = await asyncio.wait_for(ws_connect(tv_ip, 3001, ctx), timeout=TIMEOUT)
+        except asyncio.TimeoutError:
+            last_err = f"connection timed out after {TIMEOUT}s"
+        except (OSError, ConnectionError) as e:
+            last_err = str(e)
+        else:
+            try:
+                await _session(ws, mode, client_key)
+                return
+            except ConnectionError as e:
+                last_err = str(e)
+            finally:
+                await ws.close()
+
+        # On first failure for "on", send WoL to wake the TV from standby.
+        # Harmless if TV is already on — it will simply ignore the packet.
+        if not wol_sent and mac and mode == "on":
+            _send_wol(mac)
+            print("Sent Wake-on-LAN — waiting for TV to boot...", file=sys.stderr)
+            wol_sent = True
+
+        if attempt < RETRY_ATTEMPTS:
+            print(
+                f"[attempt {attempt}/{RETRY_ATTEMPTS}] {last_err} — retrying in {RETRY_DELAY}s",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(RETRY_DELAY)
+
+    sys.exit(f"Could not reach TV at {tv_ip} after {RETRY_ATTEMPTS} attempts: {last_err}")
 
 
 def main() -> None:
