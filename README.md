@@ -1,6 +1,6 @@
 # BazziteLGTV
 
-Automatically power your LG TV on at boot and off at shutdown, when using it as a PC monitor on **Bazzite** (or any SELinux-enforcing Fedora Atomic distro).
+Automatically power your LG TV on/off when using it as a PC monitor on **Bazzite** (or any SELinux-enforcing Fedora Atomic distro). Handles boot, shutdown, and suspend/resume.
 
 Existing solutions like [LG_Buddy](https://github.com/jesseposner/LG_Buddy) and [lgpowercontrol](https://github.com/nicholasgasior/lgpowercontrol) don't work on Bazzite because systemd runs in the `init_t` SELinux domain and cannot execute scripts installed to `~/.local/` (`user_home_t`). This project fixes that correctly — no custom SELinux policy modules, no hacks.
 
@@ -85,8 +85,9 @@ Scripts are installed to `/etc/lgtvcontrol/` and labelled `bin_t` via `semanage 
   client.key       ← auth key (written during pairing)
 
 /etc/systemd/system/
-  lgtv-startup.service
-  lgtv-shutdown.service
+  lgtv-startup.service   ← powers on at boot
+  lgtv-shutdown.service  ← powers off at shutdown
+  lgtv-sleep.service     ← powers off on suspend, powers on at resume
 ```
 
 ### TV communication
@@ -108,6 +109,10 @@ The TV's MAC is detected automatically from the ARP cache during install.
 
 `lgtv-shutdown.service` has `Conflicts=reboot.target`, so the screen turns off on **shutdown only** — reboots leave it alone.
 
+### Suspend/resume
+
+`lgtv-sleep.service` runs `lgtv-off.sh` before the system suspends and `lgtv-on.sh` after it wakes. It uses `RemainAfterExit=yes` so systemd tracks the "active" state across the sleep cycle and calls `ExecStop` (the on command) on resume. It activates for all sleep states: suspend, hibernate, and hybrid-sleep.
+
 ---
 
 ## Useful commands
@@ -116,9 +121,10 @@ The TV's MAC is detected automatically from the ARP cache during install.
 # Check service status
 systemctl status lgtv-startup.service
 systemctl status lgtv-shutdown.service
+systemctl status lgtv-sleep.service
 
 # View logs
-journalctl -u lgtv-startup -u lgtv-shutdown -f
+journalctl -u lgtv-startup -u lgtv-shutdown -u lgtv-sleep -f
 
 # Manually trigger
 sudo systemctl start lgtv-startup.service

@@ -1,0 +1,17 @@
+[Unit]
+Description=Power off LG TV on suspend, power on at resume
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/etc/lgtvcontrol/lgtv-off.sh
+ExecStop=/etc/lgtvcontrol/lgtv-on.sh
+TimeoutStartSec=15
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sleep.target
