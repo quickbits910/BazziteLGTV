@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import pathlib
 import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -447,3 +448,33 @@ def test_main_pair(monkeypatch):
     with patch("lgtv.run", AsyncMock()) as mock_run:
         lgtv.main()
     mock_run.assert_called_once_with("pair")
+
+
+# ── lgtv-sleep.service ────────────────────────────────────────────────────────
+
+_SLEEP_SVC = pathlib.Path(__file__).parent.parent / "systemd" / "lgtv-sleep.service"
+
+
+@pytest.fixture(scope="module")
+def sleep_svc():
+    return _SLEEP_SVC.read_text()
+
+
+def test_sleep_service_off_on_suspend(sleep_svc):
+    assert "ExecStart=/etc/lgtvcontrol/lgtv-off.sh" in sleep_svc
+
+
+def test_sleep_service_on_on_resume(sleep_svc):
+    assert "ExecStop=/etc/lgtvcontrol/lgtv-on.sh" in sleep_svc
+
+
+def test_sleep_service_before_sleep_target(sleep_svc):
+    assert "Before=sleep.target" in sleep_svc
+
+
+def test_sleep_service_wantedby_sleep_target(sleep_svc):
+    assert "WantedBy=sleep.target" in sleep_svc
+
+
+def test_sleep_service_remain_after_exit(sleep_svc):
+    assert "RemainAfterExit=yes" in sleep_svc

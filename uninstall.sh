@@ -15,7 +15,7 @@ selinux_enforcing(){ cmd_exists getenforce && [[ "$(getenforce 2>/dev/null)" == 
 
 echo
 printf "${BOLD}This will remove:${NC}\n"
-printf "  %s/{lgtv-startup,lgtv-shutdown}.service\n" "$SERVICE_DIR"
+printf "  %s/{lgtv-startup,lgtv-shutdown,lgtv-sleep}.service\n" "$SERVICE_DIR"
 printf "  %s/\n" "$CONF_DIR"
 [[ -d "$OLD_VENV_DIR" ]] && printf "  %s/ (legacy venv)\n" "$OLD_VENV_DIR"
 selinux_enforcing && printf "  SELinux fcontext rules for the above paths\n"
@@ -24,7 +24,7 @@ read -rp "$(printf "${BOLD}Continue? [y/N]: ${NC}")" answer
 [[ "$answer" =~ ^[Yy]([Ee][Ss])?$ ]] || { echo "Aborted."; exit 0; }
 
 info "Disabling and removing services"
-for svc in lgtv-startup lgtv-shutdown; do
+for svc in lgtv-startup lgtv-shutdown lgtv-sleep; do
     if systemctl is-enabled --quiet "${svc}.service" 2>/dev/null; then
         sudo systemctl disable "${svc}.service"
     fi

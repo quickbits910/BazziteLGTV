@@ -178,13 +178,13 @@ fi
 # ---------------------------------------------------------------------------
 info "Installing systemd services"
 
-for svc in lgtv-startup lgtv-shutdown; do
+for svc in lgtv-startup lgtv-shutdown lgtv-sleep; do
     sudo cp "$SCRIPT_DIR/systemd/${svc}.service" "$SERVICE_DIR/"
     ok "${svc}.service"
 done
 
 sudo systemctl daemon-reload
-sudo systemctl enable lgtv-startup.service lgtv-shutdown.service
+sudo systemctl enable lgtv-startup.service lgtv-shutdown.service lgtv-sleep.service
 ok "Services enabled"
 
 # ---------------------------------------------------------------------------
@@ -194,7 +194,7 @@ info "Installation complete"
 echo
 printf "  Useful commands:\n"
 printf "    Test:   ./install.sh --test\n"
-printf "    Logs:   journalctl -u lgtv-startup -u lgtv-shutdown -f\n"
+printf "    Logs:   journalctl -u lgtv-startup -u lgtv-shutdown -u lgtv-sleep -f\n"
 printf "    Re-pair: sudo python3 %s/lgtv.py pair\n" "$CONF_DIR"
 echo
 
