@@ -5,6 +5,7 @@ Zero external dependencies: uses only Python standard library (asyncio + ssl).
 
 import asyncio
 import base64
+import fcntl
 import json
 import os
 import socket
@@ -157,13 +158,44 @@ async def ws_connect(host: str, port: int, ctx: ssl.SSLContext) -> WebSocket:
 # LG TV control
 # ---------------------------------------------------------------------------
 
-def _send_wol(mac: str) -> None:
-    """Broadcast a Wake-on-LAN magic packet to the given MAC address."""
+_SIOCGIFADDR    = 0x8915  # Linux ioctl: get interface IPv4 address
+_SIOCGIFNETMASK = 0x891b  # Linux ioctl: get interface netmask
+
+
+def _subnet_broadcast(tv_ip: str) -> str:
+    """Return the directed broadcast address of the interface that routes to tv_ip."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect((tv_ip, 9))
+        local_ip = probe.getsockname()[0]
+
+    for _, ifname in socket.if_nameindex():
+        packed = struct.pack("16sH14s", ifname.encode()[:16], socket.AF_INET, b"\0" * 14)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                addr_res = fcntl.ioctl(s.fileno(), _SIOCGIFADDR, packed)
+                if socket.inet_ntoa(addr_res[20:24]) != local_ip:
+                    continue
+                mask_res = fcntl.ioctl(s.fileno(), _SIOCGIFNETMASK, packed)
+        except OSError:
+            continue
+
+        ip_int   = struct.unpack("!I", socket.inet_aton(local_ip))[0]
+        mask_int = struct.unpack("!I", mask_res[20:24])[0]
+        bcast    = (ip_int & mask_int) | (~mask_int & 0xFFFFFFFF)
+        return socket.inet_ntoa(struct.pack("!I", bcast))
+
+    return "255.255.255.255"  # global broadcast fallback
+
+
+def _send_wol(mac: str, tv_ip: str) -> None:
+    """Send WoL magic packet via subnet broadcast and directly to the TV's IP."""
     mac_bytes = bytes.fromhex(mac.replace(":", "").replace("-", ""))
     packet = b"\xff" * 6 + mac_bytes * 16
+    broadcast = _subnet_broadcast(tv_ip)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        s.sendto(packet, ("192.168.1.255", 9))
+        s.sendto(packet, (broadcast, 9))
+        s.sendto(packet, (tv_ip, 9))
 
 
 async def _session(ws: WebSocket, mode: str, client_key: str | None) -> None:
@@ -276,7 +308,7 @@ async def run(mode: str) -> None:
         # On first failure for "on", send WoL to wake the TV from standby.
         # Harmless if TV is already on — it will simply ignore the packet.
         if not wol_sent and mac and mode == "on":
-            _send_wol(mac)
+            _send_wol(mac, tv_ip)
             print("Sent Wake-on-LAN — waiting for TV to boot...", file=sys.stderr)
             wol_sent = True
 

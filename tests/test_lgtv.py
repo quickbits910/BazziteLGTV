@@ -320,17 +320,66 @@ async def test_exhausts_retries_and_exits(tmp_path, monkeypatch):
     assert mock_connect.call_count == 3
 
 
+# ── _subnet_broadcast ────────────────────────────────────────────────────────
+
+def test_subnet_broadcast_detects_correct_address():
+    """Returns directed broadcast for the interface that routes to tv_ip."""
+    import struct, socket as _socket
+
+    local_ip = "192.168.50.10"
+    netmask   = "255.255.255.0"
+    # expected broadcast: 192.168.50.255
+    expected  = "192.168.50.255"
+
+    def make_ifreq(ip: str) -> bytes:
+        packed_ip = _socket.inet_aton(ip)
+        return struct.pack("16sH2s4s8s", b"eth0\0" * 1, _socket.AF_INET, b"\0\0", packed_ip, b"\0" * 8)
+
+    probe_sock = MagicMock()
+    probe_sock.__enter__ = MagicMock(return_value=probe_sock)
+    probe_sock.__exit__  = MagicMock(return_value=False)
+    probe_sock.getsockname.return_value = (local_ip, 0)
+
+    query_sock = MagicMock()
+    query_sock.__enter__ = MagicMock(return_value=query_sock)
+    query_sock.__exit__  = MagicMock(return_value=False)
+    query_sock.fileno.return_value = 3
+
+    with patch("socket.socket", side_effect=[probe_sock, query_sock, query_sock]), \
+         patch("socket.if_nameindex", return_value=[(1, "eth0")]), \
+         patch("fcntl.ioctl", side_effect=[make_ifreq(local_ip), make_ifreq(netmask)]):
+        result = lgtv._subnet_broadcast("192.168.50.1")
+
+    assert result == expected
+
+
+def test_subnet_broadcast_falls_back_on_no_match():
+    """Falls back to 255.255.255.255 when no interface matches the route."""
+    probe_sock = MagicMock()
+    probe_sock.__enter__ = MagicMock(return_value=probe_sock)
+    probe_sock.__exit__  = MagicMock(return_value=False)
+    probe_sock.getsockname.return_value = ("10.0.0.5", 0)
+
+    with patch("socket.socket", return_value=probe_sock), \
+         patch("socket.if_nameindex", return_value=[]), \
+         patch("fcntl.ioctl", side_effect=OSError):
+        result = lgtv._subnet_broadcast("10.0.0.1")
+
+    assert result == "255.255.255.255"
+
+
 # ── _send_wol ─────────────────────────────────────────────────────────────────
 
 def test_send_wol_packet_structure():
     """Magic packet = 6×0xFF header + MAC repeated 16 times."""
     import socket as _socket
-    with patch("socket.socket") as mock_cls:
+    with patch("lgtv._subnet_broadcast", return_value="192.168.1.255"), \
+         patch("socket.socket") as mock_cls:
         sock = MagicMock()
         mock_cls.return_value.__enter__ = MagicMock(return_value=sock)
         mock_cls.return_value.__exit__ = MagicMock(return_value=False)
-        lgtv._send_wol("aa:bb:cc:dd:ee:ff")
-    packet = sock.sendto.call_args[0][0]
+        lgtv._send_wol("aa:bb:cc:dd:ee:ff", "192.168.1.100")
+    packet = sock.sendto.call_args_list[0][0][0]
     assert packet[:6] == b"\xff" * 6
     assert packet[6:] == bytes.fromhex("aabbccddeeff") * 16
     sock.setsockopt.assert_called_once_with(_socket.SOL_SOCKET, _socket.SO_BROADCAST, 1)
@@ -338,13 +387,29 @@ def test_send_wol_packet_structure():
 
 def test_send_wol_normalises_separators():
     """MAC with dashes and mixed case is handled correctly."""
-    with patch("socket.socket") as mock_cls:
+    with patch("lgtv._subnet_broadcast", return_value="192.168.1.255"), \
+         patch("socket.socket") as mock_cls:
         sock = MagicMock()
         mock_cls.return_value.__enter__ = MagicMock(return_value=sock)
         mock_cls.return_value.__exit__ = MagicMock(return_value=False)
-        lgtv._send_wol("AA-BB-CC-DD-EE-FF")
-    packet = sock.sendto.call_args[0][0]
+        lgtv._send_wol("AA-BB-CC-DD-EE-FF", "192.168.1.100")
+    packet = sock.sendto.call_args_list[0][0][0]
     assert packet[6:] == bytes.fromhex("AABBCCDDEEFF") * 16
+
+
+def test_send_wol_sends_to_broadcast_and_direct():
+    """Packet is sent to both the subnet broadcast address and the TV's IP."""
+    tv_ip = "192.168.1.100"
+    broadcast = "192.168.1.255"
+    with patch("lgtv._subnet_broadcast", return_value=broadcast), \
+         patch("socket.socket") as mock_cls:
+        sock = MagicMock()
+        mock_cls.return_value.__enter__ = MagicMock(return_value=sock)
+        mock_cls.return_value.__exit__ = MagicMock(return_value=False)
+        lgtv._send_wol("aa:bb:cc:dd:ee:ff", tv_ip)
+    destinations = [call[0][1] for call in sock.sendto.call_args_list]
+    assert (broadcast, 9) in destinations
+    assert (tv_ip, 9) in destinations
 
 
 # ── run() — Wake-on-LAN ───────────────────────────────────────────────────────
@@ -362,7 +427,7 @@ async def test_wol_sent_on_first_failure(tmp_path, monkeypatch):
          patch("lgtv.ws_connect", AsyncMock(side_effect=[ws_drop, ws_ok])), \
          patch("lgtv._send_wol") as mock_wol:
         await run("on")
-    mock_wol.assert_called_once_with("aa:bb:cc:dd:ee:ff")
+    mock_wol.assert_called_once_with("aa:bb:cc:dd:ee:ff", "192.168.1.100")
 
 
 async def test_wol_sent_only_once(tmp_path, monkeypatch):
