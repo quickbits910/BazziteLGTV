@@ -13,7 +13,7 @@ Existing solutions like [LG_Buddy](https://github.com/jesseposner/LG_Buddy) and 
 ### System
 
 - Bazzite / Fedora Atomic (or any SELinux-enforcing distro)
-- LG WebOS TV connected via **wired LAN** on your local network (192.168.1.x)
+- LG WebOS TV connected via **wired LAN** or **WiFi** on your local network e.g. (192.168.1.x)
 - `python3` (already present on all Fedora-based systems)
 - `policycoreutils-python-utils` — for `semanage` (only needed if SELinux is Enforcing)
 
@@ -47,7 +47,7 @@ The installer will:
 3. Copy scripts to `/etc/lgtvcontrol/`
 4. Apply `bin_t` SELinux contexts so systemd can execute them
 5. Pair with the TV — a prompt appears on screen, press OK with your remote
-6. Detect and save the TV's MAC address for Wake-on-LAN
+6. Detect and save the TV's MAC address for Wake-on-LAN or Wifi
 7. Install and enable the systemd services
 8. Offer to run a screen test (off 10s → on)
 
@@ -81,7 +81,7 @@ Scripts are installed to `/etc/lgtvcontrol/` and labelled `bin_t` via `semanage 
   lgtv-on.sh       ← calls: python3 /etc/lgtvcontrol/lgtv.py on
   lgtv-off.sh      ← calls: python3 /etc/lgtvcontrol/lgtv.py off
   tv_ip            ← TV IP address (written by installer)
-  tv_mac           ← TV wired MAC address (written by installer, used for WoL)
+  tv_mac           ← TV MAC address (written by installer, used for WoL)
   client.key       ← auth key (written during pairing)
 
 /etc/systemd/system/
@@ -101,7 +101,7 @@ Pairing is done once. The client key is saved to `/etc/lgtvcontrol/client.key` a
 
 ### Wake-on-LAN
 
-When powering on, `lgtv.py` attempts to connect to the TV. If the first attempt fails (TV is in standby), it sends a WoL magic packet to the TV's wired MAC address via UDP broadcast (`192.168.1.255`, port 9), then retries the connection up to 8 times with 5-second delays while the TV boots.
+When powering on, `lgtv.py` attempts to connect to the TV. If the first attempt fails (TV is in standby), it sends a WoL magic packet to the TV's MAC address via UDP broadcast e.g. (`192.168.1.255`, port 9), then retries the connection up to 8 times with 5-second delays while the TV boots.
 
 The TV's MAC is detected automatically from the ARP cache during install.
 
