@@ -1,0 +1,20 @@
+# lgtvcontrol tunables — copy to /etc/lgtvcontrol/config to override defaults.
+#
+# Format: one "key = value" per line. "#" starts a comment; blank lines are
+# ignored. Unknown keys and bad/negative values are warned about on stderr and
+# fall back to the default — a broken config never blocks a power command.
+#
+# All settings are optional; anything omitted keeps its built-in default.
+
+# Per-connection timeout, in seconds (default: 10).
+#timeout = 10
+
+# Maximum number of connection attempts before giving up (default: 8).
+# Raise this if your TV's WiFi is slow to come up after standby.
+#retry_attempts = 8
+
+# Retry backoff, in seconds. Delay before attempt N is
+#   min(backoff_max, backoff_base * 2**(N-1))
+# Defaults 1.0 / 8.0 give 1, 2, 4, 8, 8, 8, 8s (~39s total across 8 attempts).
+#backoff_base = 1.0
+#backoff_max  = 8.0

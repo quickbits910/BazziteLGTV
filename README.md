@@ -83,6 +83,7 @@ Scripts are installed to `/etc/lgtvcontrol/` and labelled `bin_t` via `semanage 
   tv_ip            ← TV IP address (written by installer)
   tv_mac           ← TV MAC address (written by installer, used for WoL)
   client.key       ← auth key (written during pairing)
+  config           ← optional retry/backoff tunables (see config.example)
 
 /etc/systemd/system/
   lgtv-startup.service   ← powers on at boot
@@ -101,7 +102,20 @@ Pairing is done once. The client key is saved to `/etc/lgtvcontrol/client.key` a
 
 ### Wake-on-LAN
 
-When powering on, `lgtv.py` attempts to connect to the TV. If the first attempt fails (TV is in standby), it sends a WoL magic packet to the TV's MAC address via UDP broadcast e.g. (`192.168.1.255`, port 9), then retries the connection up to 8 times with 5-second delays while the TV boots.
+When powering on, `lgtv.py` sends a WoL magic packet to the TV's MAC address *before* the first connection attempt — via the subnet's directed broadcast and directly to the TV's IP (UDP port 9) — and re-sends it on every retry. A TV waking from standby over WiFi can miss the first packet before its radio re-associates with the AP, so repeating the cheap, idempotent packet is what makes the wake reliable. It then retries the connection up to 8 times with exponential backoff (1, 2, 4, 8, 8… seconds) while the TV boots.
+
+### Tuning retries
+
+Retry behaviour is tunable without editing the script. Copy `config.example` to `/etc/lgtvcontrol/config` and uncomment the settings you want to change:
+
+```
+timeout        = 10    # per-connection timeout (seconds)
+retry_attempts = 8     # max connection attempts
+backoff_base   = 1.0   # delay before the first retry
+backoff_max    = 8.0   # cap on the per-retry delay
+```
+
+If your TV is slow to rejoin WiFi after standby, raise `retry_attempts` (and/or `backoff_max`) to widen the wake window. Unknown keys and bad values are warned about on stderr and fall back to the default.
 
 The TV's MAC is detected automatically from the ARP cache during install.
 

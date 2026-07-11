@@ -109,6 +109,11 @@ sudo cp "$SCRIPT_DIR/scripts/lgtv.py" "$CONF_DIR/lgtv.py"
 sudo chmod 755 "$CONF_DIR/lgtv.py"
 ok "lgtv.py"
 
+# Reference config (optional tunables) — copy to "config" to activate.
+sudo cp "$SCRIPT_DIR/config.example" "$CONF_DIR/config.example"
+sudo chmod 644 "$CONF_DIR/config.example"
+ok "config.example (copy to $CONF_DIR/config to tune retries)"
+
 # Shell wrappers
 for cmd in on off; do
     sudo cp "$SCRIPT_DIR/scripts/lgtv-${cmd}.sh.tpl" "$CONF_DIR/lgtv-${cmd}.sh"

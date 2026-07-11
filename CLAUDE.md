@@ -28,11 +28,11 @@ pip install -r requirements-test.txt
 
 The project has one real source file: `scripts/lgtv.py`. Everything else is glue.
 
-**`scripts/lgtv.py`** — standalone Python script, zero external dependencies. Implements a minimal WebSocket client from scratch (RFC 6455 framing, TLS via `ssl`, masking, all frame sizes) because the TV requires WSS on port 3001. Uses LG's SSAP protocol over that WebSocket. Runtime config is read from `/etc/lgtvcontrol/`: `tv_ip`, `client.key`, and `tv_mac` (optional, for WoL).
+**`scripts/lgtv.py`** — standalone Python script, zero external dependencies. Implements a minimal WebSocket client from scratch (RFC 6455 framing, TLS via `ssl`, masking, all frame sizes) because the TV requires WSS on port 3001. Uses LG's SSAP protocol over that WebSocket. Runtime config is read from `/etc/lgtvcontrol/`: `tv_ip`, `client.key`, `tv_mac` (optional, for WoL), and an optional `config` file of `key = value` tunables (`timeout`, `retry_attempts`, `backoff_base`, `backoff_max`) parsed by `_apply_config()` at the top of `run()`. See `config.example`; bad/unknown entries warn on stderr and fall back to the module default.
 
 Commands: `pair | on | off`. `on`/`off` register with a stored client key then send a single SSAP request. `pair` does the same registration flow but waits for user approval on the TV and saves the returned key.
 
-**Retry/WoL loop** — `run()` retries the connection up to 8 times (5s delay). On the first failure for `on`, it broadcasts a WoL magic packet to the TV's MAC so the TV wakes from standby before retrying.
+**Retry/WoL loop** — `run()` retries the connection up to 8 times with exponential backoff (`BACKOFF_BASE`/`BACKOFF_MAX` → 1, 2, 4, 8, 8… seconds, ~39s total). For `on`, it broadcasts a WoL magic packet *before* the first attempt and re-sends it on every retry — a WiFi TV waking from standby can miss the first packet before its radio re-associates, so repeating the cheap idempotent packet is what makes the wake reliable.
 
 **Systemd services** (in `systemd/`, installed to `/etc/systemd/system/`):
 - `lgtv-startup.service` — runs `lgtv-on.sh` at boot (`WantedBy=multi-user.target`)
