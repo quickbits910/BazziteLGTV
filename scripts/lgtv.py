@@ -18,9 +18,62 @@ CONF_DIR = Path("/etc/lgtvcontrol")
 KEY_FILE = CONF_DIR / "client.key"
 IP_FILE  = CONF_DIR / "tv_ip"
 MAC_FILE = CONF_DIR / "tv_mac"
-TIMEOUT        = 10
-RETRY_ATTEMPTS = 8   # max connection attempts at startup
-RETRY_DELAY    = 5   # seconds between attempts
+CONFIG_FILE = CONF_DIR / "config"  # optional KEY=VALUE tunables (see _apply_config)
+
+# Defaults — overridable per key via CONFIG_FILE.
+TIMEOUT        = 10   # per-connection timeout (seconds)
+RETRY_ATTEMPTS = 8    # max connection attempts at startup
+# Exponential backoff between attempts: delay = min(BACKOFF_MAX, BACKOFF_BASE * 2**n).
+# Gives 1, 2, 4, 8, 8, 8, 8s (~39s total) — long enough for a WiFi TV to wake
+# from standby, re-associate with the AP and pick up a DHCP lease.
+BACKOFF_BASE   = 1.0  # seconds before the first retry
+BACKOFF_MAX    = 8.0  # cap on the per-retry delay
+
+# Tunable name -> (module global, parser). Anything else in CONFIG_FILE is ignored.
+_CONFIG_KEYS = {
+    "timeout":        ("TIMEOUT", float),
+    "retry_attempts": ("RETRY_ATTEMPTS", int),
+    "backoff_base":   ("BACKOFF_BASE", float),
+    "backoff_max":    ("BACKOFF_MAX", float),
+}
+
+
+def _apply_config() -> None:
+    """Override the tunable globals from CONFIG_FILE, if it exists.
+
+    Format is one ``key = value`` per line; ``#`` starts a comment and blank
+    lines are ignored. Unknown keys and unparseable/negative values are warned
+    about on stderr and left at their default — a bad config never aborts a
+    power command.
+    """
+    try:
+        text = CONFIG_FILE.read_text()
+    except FileNotFoundError:
+        return
+
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "=" not in line:
+            print(f"{CONFIG_FILE}:{lineno}: ignoring malformed line: {raw!r}", file=sys.stderr)
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().lower()
+        value = value.strip()
+        if key not in _CONFIG_KEYS:
+            print(f"{CONFIG_FILE}:{lineno}: unknown setting {key!r} — ignored", file=sys.stderr)
+            continue
+        attr, parse = _CONFIG_KEYS[key]
+        try:
+            parsed = parse(value)
+        except ValueError:
+            print(f"{CONFIG_FILE}:{lineno}: bad value for {key!r}: {value!r} — using default", file=sys.stderr)
+            continue
+        if parsed <= 0:
+            print(f"{CONFIG_FILE}:{lineno}: {key!r} must be positive — using default", file=sys.stderr)
+            continue
+        globals()[attr] = parsed
 
 ENDPOINTS = {
     "on":  "com.webos.service.tvpower/power/turnOnScreen",
@@ -270,6 +323,7 @@ async def _session(ws: WebSocket, mode: str, client_key: str | None) -> None:
 
 
 async def run(mode: str) -> None:
+    _apply_config()
     try:
         tv_ip = IP_FILE.read_text().strip()
     except FileNotFoundError:
@@ -287,8 +341,14 @@ async def run(mode: str) -> None:
 
     mac = MAC_FILE.read_text().strip() if MAC_FILE.exists() else None
 
+    # For "on" the TV is almost certainly in standby, so wake it *before* the
+    # first attempt — its WiFi radio then has the whole retry window to
+    # re-associate with the AP and pick up an address. Harmless if already on.
+    if mac and mode == "on":
+        _send_wol(mac, tv_ip)
+        print("Sent Wake-on-LAN — waiting for TV to boot...", file=sys.stderr)
+
     last_err = ""
-    wol_sent = False
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
             ws = await asyncio.wait_for(ws_connect(tv_ip, 3001, ctx), timeout=TIMEOUT)
@@ -305,19 +365,20 @@ async def run(mode: str) -> None:
             finally:
                 await ws.close()
 
-        # On first failure for "on", send WoL to wake the TV from standby.
-        # Harmless if TV is already on — it will simply ignore the packet.
-        if not wol_sent and mac and mode == "on":
-            _send_wol(mac, tv_ip)
-            print("Sent Wake-on-LAN — waiting for TV to boot...", file=sys.stderr)
-            wol_sent = True
-
         if attempt < RETRY_ATTEMPTS:
+            # Re-send WoL on every retry. A WiFi TV waking from standby can miss
+            # the first magic packet before its radio re-associates, and APs drop
+            # broadcast frames to sleeping stations. Packets are cheap and
+            # idempotent — the TV ignores them once it is awake.
+            if mac and mode == "on":
+                _send_wol(mac, tv_ip)
+
+            delay = min(BACKOFF_MAX, BACKOFF_BASE * 2 ** (attempt - 1))
             print(
-                f"[attempt {attempt}/{RETRY_ATTEMPTS}] {last_err} — retrying in {RETRY_DELAY}s",
+                f"[attempt {attempt}/{RETRY_ATTEMPTS}] {last_err} — retrying in {delay:.0f}s",
                 file=sys.stderr,
             )
-            await asyncio.sleep(RETRY_DELAY)
+            await asyncio.sleep(delay)
 
     sys.exit(f"Could not reach TV at {tv_ip} after {RETRY_ATTEMPTS} attempts: {last_err}")
 

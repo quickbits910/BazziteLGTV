@@ -281,7 +281,7 @@ async def test_connect_os_error_exits(tmp_path, no_retries):
 
 async def test_retries_on_connection_drop(tmp_path, monkeypatch):
     """TV closes the WebSocket during registration; script retries and succeeds."""
-    monkeypatch.setattr(lgtv, "RETRY_DELAY", 0)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
     ip, key = setup_files(tmp_path)
     ws_drop = make_ws(ConnectionError("Server closed the WebSocket connection"))
     ws_ok   = make_ws(REGISTERED, SUCCESS)
@@ -294,7 +294,7 @@ async def test_retries_on_connection_drop(tmp_path, monkeypatch):
 
 async def test_retries_on_connect_error_then_succeeds(tmp_path, monkeypatch):
     """TCP connection refused on first attempt; second attempt succeeds."""
-    monkeypatch.setattr(lgtv, "RETRY_DELAY", 0)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
     ip, key = setup_files(tmp_path)
     ws_ok = make_ws(REGISTERED, SUCCESS)
     with patch.object(lgtv, "IP_FILE", ip), patch.object(lgtv, "KEY_FILE", key), \
@@ -305,7 +305,7 @@ async def test_retries_on_connect_error_then_succeeds(tmp_path, monkeypatch):
 async def test_exhausts_retries_and_exits(tmp_path, monkeypatch):
     """Every attempt fails; script exits after RETRY_ATTEMPTS attempts."""
     monkeypatch.setattr(lgtv, "RETRY_ATTEMPTS", 3)
-    monkeypatch.setattr(lgtv, "RETRY_DELAY", 0)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
     ip, key = setup_files(tmp_path)
     # side_effect as a bare exception (not a list) means it fires on every call
     ws_drop = MagicMock(spec=WebSocket)
@@ -414,26 +414,27 @@ def test_send_wol_sends_to_broadcast_and_direct():
 
 # ── run() — Wake-on-LAN ───────────────────────────────────────────────────────
 
-async def test_wol_sent_on_first_failure(tmp_path, monkeypatch):
-    """WoL is broadcast on first connection failure when MAC is configured."""
-    monkeypatch.setattr(lgtv, "RETRY_DELAY", 0)
+async def test_wol_sent_proactively_before_first_attempt(tmp_path, monkeypatch):
+    """WoL is broadcast up front (before connecting) when MAC is configured."""
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
     ip, key = setup_files(tmp_path)
     mac_file = tmp_path / "tv_mac"
     mac_file.write_text("aa:bb:cc:dd:ee:ff\n")
-    ws_drop = make_ws(ConnectionError("Server closed the WebSocket connection"))
-    ws_ok   = make_ws(REGISTERED, SUCCESS)
+    ws_ok = make_ws(REGISTERED, SUCCESS)
     with patch.object(lgtv, "IP_FILE", ip), patch.object(lgtv, "KEY_FILE", key), \
          patch.object(lgtv, "MAC_FILE", mac_file), \
-         patch("lgtv.ws_connect", AsyncMock(side_effect=[ws_drop, ws_ok])), \
+         patch("lgtv.ws_connect", AsyncMock(return_value=ws_ok)), \
          patch("lgtv._send_wol") as mock_wol:
         await run("on")
+    # Connection succeeds on the first attempt, so the only send is the
+    # proactive one that fires before the retry loop begins.
     mock_wol.assert_called_once_with("aa:bb:cc:dd:ee:ff", "192.168.1.100")
 
 
-async def test_wol_sent_only_once(tmp_path, monkeypatch):
-    """WoL is sent exactly once even when multiple retries are needed."""
+async def test_wol_resent_on_each_retry(tmp_path, monkeypatch):
+    """WoL is re-sent on every retry (proactive send + one per failed attempt)."""
     monkeypatch.setattr(lgtv, "RETRY_ATTEMPTS", 4)
-    monkeypatch.setattr(lgtv, "RETRY_DELAY", 0)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
     ip, key = setup_files(tmp_path)
     mac_file = tmp_path / "tv_mac"
     mac_file.write_text("aa:bb:cc:dd:ee:ff\n")
@@ -447,12 +448,14 @@ async def test_wol_sent_only_once(tmp_path, monkeypatch):
          patch("lgtv.ws_connect", AsyncMock(side_effect=[ws_fail, ws_fail, ws_ok])), \
          patch("lgtv._send_wol") as mock_wol:
         await run("on")
-    mock_wol.assert_called_once()
+    # 1 proactive + 1 after attempt 1 fails + 1 after attempt 2 fails = 3.
+    assert mock_wol.call_count == 3
+    mock_wol.assert_called_with("aa:bb:cc:dd:ee:ff", "192.168.1.100")
 
 
 async def test_wol_not_sent_without_mac_file(tmp_path, monkeypatch):
     """No WoL when MAC file does not exist."""
-    monkeypatch.setattr(lgtv, "RETRY_DELAY", 0)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
     ip, key = setup_files(tmp_path)
     mac_file = tmp_path / "tv_mac"   # not created
     ws_drop = make_ws(ConnectionError("Server closed"))
@@ -467,7 +470,7 @@ async def test_wol_not_sent_without_mac_file(tmp_path, monkeypatch):
 
 async def test_wol_not_sent_for_off_command(tmp_path, monkeypatch):
     """WoL is never sent for the off command."""
-    monkeypatch.setattr(lgtv, "RETRY_DELAY", 0)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
     ip, key = setup_files(tmp_path)
     mac_file = tmp_path / "tv_mac"
     mac_file.write_text("aa:bb:cc:dd:ee:ff\n")
@@ -478,6 +481,62 @@ async def test_wol_not_sent_for_off_command(tmp_path, monkeypatch):
          patch("lgtv._send_wol") as mock_wol:
         await run("off")
     mock_wol.assert_not_called()
+
+
+# ── _apply_config ─────────────────────────────────────────────────────────────
+
+def test_apply_config_overrides_tunables(tmp_path, monkeypatch):
+    cfg = tmp_path / "config"
+    cfg.write_text(
+        "# retry tuning\n"
+        "timeout = 15\n"
+        "retry_attempts = 12\n"
+        "backoff_base = 2.5\n"
+        "backoff_max = 30   # cap\n"
+        "\n"
+    )
+    monkeypatch.setattr(lgtv, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(lgtv, "TIMEOUT", 10)
+    monkeypatch.setattr(lgtv, "RETRY_ATTEMPTS", 8)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 1.0)
+    monkeypatch.setattr(lgtv, "BACKOFF_MAX", 8.0)
+    lgtv._apply_config()
+    assert lgtv.TIMEOUT == 15
+    assert lgtv.RETRY_ATTEMPTS == 12
+    assert lgtv.BACKOFF_BASE == 2.5
+    assert lgtv.BACKOFF_MAX == 30
+
+
+def test_apply_config_missing_file_keeps_defaults(tmp_path, monkeypatch):
+    monkeypatch.setattr(lgtv, "CONFIG_FILE", tmp_path / "absent")
+    monkeypatch.setattr(lgtv, "RETRY_ATTEMPTS", 8)
+    lgtv._apply_config()
+    assert lgtv.RETRY_ATTEMPTS == 8
+
+
+def test_apply_config_bad_values_keep_defaults(tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "config"
+    cfg.write_text(
+        "retry_attempts = notanumber\n"
+        "backoff_base = -3\n"
+        "unknown_key = 5\n"
+        "malformed line without equals\n"
+        "timeout = 20\n"
+    )
+    monkeypatch.setattr(lgtv, "CONFIG_FILE", cfg)
+    monkeypatch.setattr(lgtv, "TIMEOUT", 10)
+    monkeypatch.setattr(lgtv, "RETRY_ATTEMPTS", 8)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 1.0)
+    lgtv._apply_config()
+    # Bad/unknown entries are ignored; the one valid entry still applies.
+    assert lgtv.RETRY_ATTEMPTS == 8
+    assert lgtv.BACKOFF_BASE == 1.0
+    assert lgtv.TIMEOUT == 20
+    err = capsys.readouterr().err
+    assert "bad value" in err
+    assert "must be positive" in err
+    assert "unknown setting" in err
+    assert "malformed line" in err
 
 
 # ── main() ────────────────────────────────────────────────────────────────────
