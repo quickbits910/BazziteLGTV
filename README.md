@@ -96,7 +96,7 @@ Scripts are installed to `/etc/lgtvcontrol/` and labelled `bin_t` via `semanage 
 `lgtv.py` connects over WebSocket (port 3001, TLS) and sends LG's SSAP protocol commands:
 
 - **on** → `ssap://com.webos.service.tvpower/power/turnOnScreen`
-- **off** → `ssap://system/turnOff` with `standbyMode: active` (keeps network chip alive for WoL)
+- **off** → `ssap://com.webos.service.tvpower/power/turnoffcreen` with `standbyMode: active` (keeps network chip alive for WoL)
 
 Pairing is done once. The client key is saved to `/etc/lgtvcontrol/client.key` and sent with every subsequent connection.
 
