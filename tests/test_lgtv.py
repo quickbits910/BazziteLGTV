@@ -198,7 +198,7 @@ async def test_off_uri_and_payload(tmp_path):
          patch("lgtv.ws_connect", AsyncMock(return_value=ws)):
         await run("off")
     cmd = json.loads(ws.send.call_args_list[1].args[0])
-    assert cmd["uri"] == "ssap://system/turnOff"
+    assert cmd["uri"] == "ssap://com.webos.service.tvpower/power/turnOffScreen"
     assert cmd["payload"] == {"standbyMode": "active"}
 
 
@@ -275,6 +275,36 @@ async def test_connect_os_error_exits(tmp_path, no_retries):
          patch("lgtv.ws_connect", AsyncMock(side_effect=OSError("refused"))):
         with pytest.raises(SystemExit, match="Could not reach TV"):
             await run("on")
+
+
+async def test_off_does_not_retry_on_connect_error(tmp_path, monkeypatch):
+    """The off command is best-effort and should not block suspend/shutdown with retries."""
+    monkeypatch.setattr(lgtv, "RETRY_ATTEMPTS", 8)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
+    ip, key = setup_files(tmp_path)
+    mock_connect = AsyncMock(side_effect=OSError("[Errno 101] Network is unreachable"))
+    with patch.object(lgtv, "IP_FILE", ip), patch.object(lgtv, "KEY_FILE", key), \
+         patch("lgtv.ws_connect", mock_connect):
+        with pytest.raises(SystemExit, match="Could not reach TV"):
+            await run("off")
+    assert mock_connect.call_count == 1
+
+
+async def test_on_still_retries_on_connect_error(tmp_path, monkeypatch):
+    """The on command still retries because the TV may be waking up."""
+    monkeypatch.setattr(lgtv, "RETRY_ATTEMPTS", 3)
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
+    ip, key = setup_files(tmp_path)
+    ws_ok = make_ws(REGISTERED, SUCCESS)
+    mock_connect = AsyncMock(side_effect=[
+        OSError("refused"),
+        OSError("refused"),
+        ws_ok,
+    ])
+    with patch.object(lgtv, "IP_FILE", ip), patch.object(lgtv, "KEY_FILE", key), \
+         patch("lgtv.ws_connect", mock_connect):
+        await run("on")
+    assert mock_connect.call_count == 3
 
 
 # ── run() — retry logic ───────────────────────────────────────────────────────

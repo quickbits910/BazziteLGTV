@@ -349,7 +349,9 @@ async def run(mode: str) -> None:
         print("Sent Wake-on-LAN — waiting for TV to boot...", file=sys.stderr)
 
     last_err = ""
-    for attempt in range(1, RETRY_ATTEMPTS + 1):
+    max_attempts = RETRY_ATTEMPTS if mode == "on" else 1
+
+    for attempt in range(1, max_attempts + 1):
         try:
             ws = await asyncio.wait_for(ws_connect(tv_ip, 3001, ctx), timeout=TIMEOUT)
         except asyncio.TimeoutError:
@@ -365,7 +367,7 @@ async def run(mode: str) -> None:
             finally:
                 await ws.close()
 
-        if attempt < RETRY_ATTEMPTS:
+        if attempt < max_attempts:
             # Re-send WoL on every retry. A WiFi TV waking from standby can miss
             # the first magic packet before its radio re-associates, and APs drop
             # broadcast frames to sleeping stations. Packets are cheap and
@@ -375,12 +377,12 @@ async def run(mode: str) -> None:
 
             delay = min(BACKOFF_MAX, BACKOFF_BASE * 2 ** (attempt - 1))
             print(
-                f"[attempt {attempt}/{RETRY_ATTEMPTS}] {last_err} — retrying in {delay:.0f}s",
+                f"[attempt {attempt}/{RETRY_ATTEMPTS}] {last_err} — retrying in {delay}s",
                 file=sys.stderr,
             )
             await asyncio.sleep(delay)
 
-    sys.exit(f"Could not reach TV at {tv_ip} after {RETRY_ATTEMPTS} attempts: {last_err}")
+    sys.exit(f"Could not reach TV at {tv_ip} after {max_attempts} attempt(s): {last_err}")
 
 
 def main() -> None:
