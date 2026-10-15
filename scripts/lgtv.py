@@ -78,7 +78,7 @@ def _apply_config() -> None:
 ENDPOINTS = {
     "on":  "com.webos.service.tvpower/power/turnOnScreen",
     # standbyMode=active keeps the network chip alive so WoL can wake the TV
-    "off": "system/turnOff",
+    "off": "com.webos.service.tvpower/power/turnOffScreen",
 }
 
 # Standard LG remote app manifest — the signature was issued by LG and must be
