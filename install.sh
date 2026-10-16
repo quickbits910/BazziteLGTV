@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_TV_IP="192.168.1.30"
 CONF_DIR="/etc/lgtvcontrol"
 SERVICE_DIR="/etc/systemd/system"
+SELECTED_DISPLAY_KARG=""
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 ok()   { printf "${GREEN}  [OK]${NC} %s\n" "$*"; }
@@ -18,6 +19,158 @@ selinux_enforcing(){ cmd_exists getenforce && [[ "$(getenforce 2>/dev/null)" == 
 semanage_add() {
     sudo semanage fcontext -a -t bin_t "$1" 2>/dev/null \
         || sudo semanage fcontext -m -t bin_t "$1"
+}
+
+detect_drm_connectors() {
+    DRM_NAMES=()
+    DRM_PATHS=()
+    DRM_STATES=()
+
+    local status_file dir base name state
+
+    for status_file in /sys/class/drm/card*-*/status; do
+        [[ -e "$status_file" ]] || continue
+
+        dir="${status_file%/status}"
+        base="$(basename "$dir")"
+        name="$(printf '%s\n' "$base" | sed -E 's/^card[0-9]+-//')"
+        state="$(cat "$status_file" 2>/dev/null || printf "unknown")"
+
+        # Ignore DRM writeback pseudo-connectors.
+        [[ "$name" == Writeback-* ]] && continue
+
+        DRM_NAMES+=("$name")
+        DRM_PATHS+=("$dir")
+        DRM_STATES+=("$state")
+    done
+}
+
+configure_display_override() {
+    info "Display mode override"
+
+    SELECTED_DISPLAY_KARG=""
+
+    if ! cmd_exists rpm-ostree; then
+        warn "rpm-ostree not found — skipping automatic display mode override"
+        warn "If Bazzite boots to 800x600 when the TV is off, manually add a kernel video= argument."
+        return
+    fi
+
+    echo "  Some LG TVs stop exposing HDMI information after entering deep standby."
+    echo "  If the PC boots while that happens, Bazzite may fall back to 800x600"
+    echo "  or start KDE with a broken desktop."
+    echo
+    echo "  This installer can force a selected display connector to a known mode at boot."
+    echo "  It uses rpm-ostree kargs --append-if-missing, so rerunning install is safe."
+    echo
+
+    local answer
+    read -rp "$(printf "  Force a boot display mode to prevent 800x600 fallback? [Y/n]: ")" answer
+    answer="${answer:-Y}"
+    if [[ ! "$answer" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        warn "Skipping display mode override"
+        return
+    fi
+
+    detect_drm_connectors
+
+    if [[ "${#DRM_NAMES[@]}" -eq 0 ]]; then
+        warn "No DRM display connectors found under /sys/class/drm"
+        warn "Skipping display mode override"
+        return
+    fi
+
+    local ordered_indexes=()
+    local i
+
+    # Connected connectors first.
+    for i in "${!DRM_NAMES[@]}"; do
+        if [[ "${DRM_STATES[$i]}" == "connected" ]]; then
+            ordered_indexes+=("$i")
+        fi
+    done
+
+    # Then everything else.
+    for i in "${!DRM_NAMES[@]}"; do
+        if [[ "${DRM_STATES[$i]}" != "connected" ]]; then
+            ordered_indexes+=("$i")
+        fi
+    done
+
+    echo "  Detected display connectors:"
+
+    local n=1
+    local idx modes_file mode_preview
+    for idx in "${ordered_indexes[@]}"; do
+        modes_file="${DRM_PATHS[$idx]}/modes"
+        mode_preview="$(head -n 1 "$modes_file" 2>/dev/null || true)"
+        [[ -n "$mode_preview" ]] || mode_preview="no modes listed"
+
+        printf "    %d) %-12s %-12s %s\n" \
+            "$n" "${DRM_NAMES[$idx]}" "${DRM_STATES[$idx]}" "$mode_preview"
+        ((n++))
+    done
+    echo
+
+    if [[ "${DRM_STATES[${ordered_indexes[0]}]}" != "connected" ]]; then
+        warn "No connected display was detected."
+        warn "If the TV is off, turn it on and rerun the installer for best auto-detection."
+    fi
+
+    local choice
+    read -rp "$(printf "  Select TV connector [1]: ")" choice
+    choice="${choice:-1}"
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#ordered_indexes[@]} )); then
+        warn "Invalid connector selection — skipping display mode override"
+        return
+    fi
+
+    idx="${ordered_indexes[$((choice - 1))]}"
+
+    local connector connector_path default_res default_mode selected_mode
+    connector="${DRM_NAMES[$idx]}"
+    connector_path="${DRM_PATHS[$idx]}"
+
+    default_res="$(head -n 1 "$connector_path/modes" 2>/dev/null || true)"
+    default_res="${default_res:-3840x2160}"
+    default_mode="${default_res}@60"
+
+    read -rp "$(printf "  Display mode [%s]: " "$default_mode")" selected_mode
+    selected_mode="${selected_mode:-$default_mode}"
+
+    # If user typed only a resolution, add @60.
+    if [[ "$selected_mode" != *@* ]]; then
+        selected_mode="${selected_mode}@60"
+    fi
+
+    SELECTED_DISPLAY_KARG="video=${connector}:${selected_mode}D"
+
+    echo
+    printf "  Selected display override: %s\n" "$SELECTED_DISPLAY_KARG"
+    read -rp "$(printf "  Use this display mode override? [Y/n]: ")" answer
+    answer="${answer:-Y}"
+
+    if [[ ! "$answer" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        SELECTED_DISPLAY_KARG=""
+        warn "Skipping display mode override"
+        return
+    fi
+
+    ok "Display mode override selected: $SELECTED_DISPLAY_KARG"
+}
+
+apply_display_override() {
+    [[ -n "$SELECTED_DISPLAY_KARG" ]] || return 0
+
+    info "Applying display mode override"
+
+    sudo rpm-ostree kargs --append-if-missing="$SELECTED_DISPLAY_KARG"
+    echo "$SELECTED_DISPLAY_KARG" | sudo tee "$CONF_DIR/display_karg" > /dev/null
+    sudo chmod 644 "$CONF_DIR/display_karg"
+
+    ok "Kernel argument present: $SELECTED_DISPLAY_KARG"
+    warn "Reboot required for display mode override to take effect"
 }
 
 # ---------------------------------------------------------------------------
@@ -82,11 +235,19 @@ fi
 ok "TV IP: $TV_IP"
 
 # ---------------------------------------------------------------------------
+# Display mode override
+# ---------------------------------------------------------------------------
+configure_display_override
+
+# ---------------------------------------------------------------------------
 # Confirm
 # ---------------------------------------------------------------------------
 echo
 printf "  Scripts:  %s\n" "$CONF_DIR"
 printf "  Services: %s\n" "$SERVICE_DIR"
+if [[ -n "$SELECTED_DISPLAY_KARG" ]]; then
+    printf "  Display:  %s\n" "$SELECTED_DISPLAY_KARG"
+fi
 echo
 read -rp "$(printf "${BOLD}Continue? [Y/n]: ${NC}")" answer
 answer="${answer:-Y}"
@@ -98,6 +259,8 @@ answer="${answer:-Y}"
 info "Installing scripts to $CONF_DIR"
 
 sudo mkdir -p "$CONF_DIR"
+
+apply_display_override
 
 # TV IP (read by lgtv.py at runtime)
 echo "${TV_IP}" | sudo tee "$CONF_DIR/tv_ip" > /dev/null
@@ -201,6 +364,9 @@ printf "  Useful commands:\n"
 printf "    Test:   ./install.sh --test\n"
 printf "    Logs:   journalctl -u lgtv-startup -u lgtv-shutdown -u lgtv-sleep -f\n"
 printf "    Re-pair: sudo python3 %s/lgtv.py pair\n" "$CONF_DIR"
+if [[ -n "$SELECTED_DISPLAY_KARG" ]]; then
+    printf "    Display: reboot to apply %s\n" "$SELECTED_DISPLAY_KARG"
+fi
 echo
 
 # shellcheck disable=SC2059
