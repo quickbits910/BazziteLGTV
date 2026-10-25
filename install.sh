@@ -144,6 +144,11 @@ configure_display_override() {
         selected_mode="${selected_mode}@60"
     fi
 
+    if [[ ! "$selected_mode" =~ ^[0-9]+x[0-9]+(@[0-9.]+)?(Hz)?$ ]]; then
+        warn "Invalid display mode '$selected_mode' — skipping display mode override"
+        return
+    fi
+
     SELECTED_DISPLAY_KARG="video=${connector}:${selected_mode}D"
 
     echo

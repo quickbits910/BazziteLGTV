@@ -32,7 +32,7 @@ The project has one real source file: `scripts/lgtv.py`. Everything else is glue
 
 Commands: `pair | on | off`. `on`/`off` register with a stored client key then send a single SSAP request. `pair` does the same registration flow but waits for user approval on the TV and saves the returned key.
 
-**Retry/WoL loop** — `run()` retries the connection up to 8 times with exponential backoff (`BACKOFF_BASE`/`BACKOFF_MAX` → 1, 2, 4, 8, 8… seconds, ~39s total). For `on`, it broadcasts a WoL magic packet *before* the first attempt and re-sends it on every retry — a WiFi TV waking from standby can miss the first packet before its radio re-associates, so repeating the cheap idempotent packet is what makes the wake reliable.
+**Retry/WoL loop** — `run()` retries the connection up to 8 times with exponential backoff (`BACKOFF_BASE`/`BACKOFF_MAX` → 1, 2, 4, 8, 8… seconds, ~39s total). For `on`, it broadcasts a WoL magic packet *before* the first attempt and re-sends it on every retry — a WiFi TV waking from standby can miss the first packet before its radio re-associates, so repeating the cheap idempotent packet is what makes the wake reliable. Both WoL sends are guarded against `OSError`: right after resume the computer's own network is not back up yet (NetworkManager reconnects asynchronously), so a failed send must not abort the retry loop that waits for the network. `lgtv-sleep.service`'s `TimeoutStopSec=120` covers the full retry window so systemd does not kill `lgtv-on.sh` mid-retries on resume.
 
 **Systemd services** (in `systemd/`, installed to `/etc/systemd/system/`):
 - `lgtv-startup.service` — runs `lgtv-on.sh` at boot (`WantedBy=multi-user.target`)
