@@ -165,6 +165,7 @@ async def test_pair_saves_key(tmp_path):
          patch("lgtv.ws_connect", AsyncMock(return_value=ws)):
         await run("pair")
     assert key.read_text().strip() == "test-key-123"
+    assert (key.stat().st_mode & 0o777) == 0o600  # pairing key is a credential: owner-only
 
 
 async def test_pair_prompts_user(tmp_path, capsys):
@@ -513,6 +514,37 @@ async def test_wol_not_sent_for_off_command(tmp_path, monkeypatch):
     mock_wol.assert_not_called()
 
 
+async def test_wol_send_failure_does_not_abort_retries(tmp_path, monkeypatch):
+    """Post-resume: network down at first — failed WoL send must not crash run().
+
+    The retry loop keeps going (giving NetworkManager time to reconnect) and
+    re-sends WoL on each retry, so the packet lands once the network is back.
+    """
+    monkeypatch.setattr(lgtv, "BACKOFF_BASE", 0)
+    ip, key = setup_files(tmp_path)
+    mac_file = tmp_path / "tv_mac"
+    mac_file.write_text("aa:bb:cc:dd:ee:ff\n")
+    ws_ok = make_ws(REGISTERED, SUCCESS)
+    # proactive send fails, retry 1's resend fails, retry 2's resend succeeds
+    mock_wol = MagicMock(side_effect=[
+        OSError("[Errno 101] Network is unreachable"),
+        OSError("[Errno 101] Network is unreachable"),
+        None,
+    ])
+    mock_connect = AsyncMock(side_effect=[
+        OSError("[Errno 101] Network is unreachable"),
+        OSError("[Errno 101] Network is unreachable"),
+        ws_ok,
+    ])
+    with patch.object(lgtv, "IP_FILE", ip), patch.object(lgtv, "KEY_FILE", key), \
+         patch.object(lgtv, "MAC_FILE", mac_file), \
+         patch("lgtv.ws_connect", mock_connect), \
+         patch("lgtv._send_wol", mock_wol):
+        await run("on")   # must not raise despite the failed sends
+    assert mock_wol.call_count == 3
+    assert mock_connect.call_count == 3
+
+
 # ── _apply_config ─────────────────────────────────────────────────────────────
 
 def test_apply_config_overrides_tunables(tmp_path, monkeypatch):
@@ -632,3 +664,9 @@ def test_sleep_service_wantedby_sleep_target(sleep_svc):
 
 def test_sleep_service_remain_after_exit(sleep_svc):
     assert "RemainAfterExit=yes" in sleep_svc
+
+
+def test_sleep_service_timeout_covers_retry_window(sleep_svc):
+    """TimeoutStopSec must exceed the worst-case retry window (~39s backoff +
+    8 x TIMEOUT) so systemd does not kill lgtv-on.sh mid-retries on resume."""
+    assert "TimeoutStopSec=120" in sleep_svc

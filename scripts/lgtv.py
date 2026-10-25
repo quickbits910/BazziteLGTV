@@ -289,7 +289,7 @@ async def _session(ws: WebSocket, mode: str, client_key: str | None) -> None:
                 if mode == "pair":
                     key = msg["payload"]["client-key"]
                     KEY_FILE.write_text(key + "\n")
-                    KEY_FILE.chmod(0o644)
+                    KEY_FILE.chmod(0o600)
                     print(f"Paired. Client key saved to {KEY_FILE}")
                 break
 
@@ -344,9 +344,15 @@ async def run(mode: str) -> None:
     # For "on" the TV is almost certainly in standby, so wake it *before* the
     # first attempt — its WiFi radio then has the whole retry window to
     # re-associate with the AP and pick up an address. Harmless if already on.
+    # The send is guarded because right after resume the computer's own network
+    # is not back up yet (NetworkManager reconnects asynchronously); a failed
+    # WoL send must not abort the retry loop that waits for the network.
     if mac and mode == "on":
-        _send_wol(mac, tv_ip)
-        print("Sent Wake-on-LAN — waiting for TV to boot...", file=sys.stderr)
+        try:
+            _send_wol(mac, tv_ip)
+            print("Sent Wake-on-LAN — waiting for TV to boot...", file=sys.stderr)
+        except OSError as e:
+            print(f"Wake-on-LAN send failed: {e} — retrying once network is back", file=sys.stderr)
 
     last_err = ""
     max_attempts = RETRY_ATTEMPTS if mode == "on" else 1
@@ -373,7 +379,10 @@ async def run(mode: str) -> None:
             # broadcast frames to sleeping stations. Packets are cheap and
             # idempotent — the TV ignores them once it is awake.
             if mac and mode == "on":
-                _send_wol(mac, tv_ip)
+                try:
+                    _send_wol(mac, tv_ip)
+                except OSError as e:
+                    print(f"[attempt {attempt}/{RETRY_ATTEMPTS}] WoL resend failed: {e}", file=sys.stderr)
 
             delay = min(BACKOFF_MAX, BACKOFF_BASE * 2 ** (attempt - 1))
             print(

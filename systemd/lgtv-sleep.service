@@ -9,7 +9,7 @@ RemainAfterExit=yes
 ExecStart=/etc/lgtvcontrol/lgtv-off.sh
 ExecStop=/etc/lgtvcontrol/lgtv-on.sh
 TimeoutStartSec=15
-TimeoutStopSec=30
+TimeoutStopSec=120
 StandardOutput=journal
 StandardError=journal
 
